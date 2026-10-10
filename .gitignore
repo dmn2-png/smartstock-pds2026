@@ -1,0 +1,14 @@
+# Dependências (o "npm install" recria)
+node_modules
+
+# Segredos (senhas, chaves) — NUNCA subir
+.env
+
+# Banco local SQLite (cada pessoa cria o seu com "npm run seed")
+data/*.db
+data/*.db-journal
+
+# Sistema operacional / editor
+.DS_Store
+Thumbs.db
+.vscode
