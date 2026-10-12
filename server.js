@@ -35,7 +35,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ erro: 'Erro interno do servidor.' });
 });
 
-if(!process.env,VERCEL) {
+if(!process.env.VERCEL) {
 app.listen(PORT, () => {
   console.log(`\n🏬 SmartStock rodando em http://localhost:${PORT}`);
   console.log('   Execute "npm run seed" na primeira vez para criar o usuário gerente.\n');
