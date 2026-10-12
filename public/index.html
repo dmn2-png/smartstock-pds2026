@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SmartStock — Painel</title>
+<link rel="stylesheet" href="css/style.css" />
+<style>
+  body { min-height: 100vh; }
+
+  .shell {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    min-height: 100vh;
+  }
+
+  /* -- Sidebar: "rack" lateral -------------------------------------- */
+  .sidebar {
+    background: var(--structural);
+    color: #EAF1EF;
+    padding: 20px 14px;
+    display: flex;
+    flex-direction: column;
+  }
+  .sidebar .wordmark { display: flex; align-items: center; gap: 9px; padding: 0 6px 22px; }
+  .sidebar .crate { width: 26px; height: 26px; background: var(--amber); border-radius: 3px; flex-shrink:0; }
+  .sidebar .wordmark span { font-family: var(--font-display); font-weight: 800; font-size: 16px; }
+
+  .nav-group-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: #9FBAB5;
+    padding: 12px 10px 6px;
+    letter-spacing: 0.02em;
+  }
+  nav.main-nav button {
+    display: flex; align-items: center; gap: 10px;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: #DCEAE6;
+    padding: 9px 10px;
+    border-radius: var(--radius);
+    font-size: 13.5px;
+    font-family: var(--font-body);
+    font-weight: 500;
+    margin-bottom: 2px;
+    border-left: 3px solid transparent;
+  }
+  nav.main-nav button:hover { background: rgba(255,255,255,0.06); }
+  nav.main-nav button.active {
+    background: rgba(255,255,255,0.1);
+    border-left-color: var(--amber);
+    color: #fff;
+    font-weight: 600;
+  }
+  nav.main-nav .ico { font-family: var(--font-mono); font-size: 12px; opacity: 0.75; width: 16px; }
+
+  .sidebar-footer {
+    margin-top: auto;
+    padding-top: 14px;
+    border-top: 1px solid rgba(255,255,255,0.12);
+  }
+  .user-chip { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px; }
+  .user-chip .name { font-size: 13px; font-weight: 600; }
+  .user-chip .role { font-family: var(--font-mono); font-size: 10px; color: #9FBAB5; }
+  #btn-logout { background: transparent; border: 1px solid rgba(255,255,255,0.25); color: #EAF1EF; width: 100%; margin-top: 8px; padding: 7px; border-radius: var(--radius); font-size: 12.5px; }
+  #btn-logout:hover { background: rgba(255,255,255,0.08); }
+
+  /* -- Main content ---------------------------------------------------- */
+  main { padding: 26px 34px 60px; max-width: 1120px; }
+
+  .page-header { margin-bottom: 22px; }
+  .page-header h1 { font-size: 24px; }
+  .page-header .sub { font-size: 13px; color: var(--ink-soft); margin-top: 4px; }
+
+  .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+  .search-box { flex: 1; min-width: 220px; max-width: 320px; }
+
+  .stats-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 22px; }
+
+  .panel { background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius); }
+  .panel-header { padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; }
+  .panel-header h2 { font-size: 15px; }
+  .panel-body { padding: 0 18px 18px; }
+
+  .quick-actions { display: flex; gap: 10px; margin-bottom: 22px; }
+
+  @media (max-width: 760px) {
+    .shell { grid-template-columns: 1fr; }
+    .sidebar { position: sticky; top:0; z-index: 10; flex-direction: row; align-items:center; overflow-x:auto; }
+    .sidebar .wordmark { padding: 0 10px 0 0; }
+    nav.main-nav { display: flex; }
+    .sidebar-footer { display:none; }
+    .stats-row { grid-template-columns: 1fr; }
+    main { padding: 18px; }
+  }
+</style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="wordmark"><div class="crate"></div><span>SmartStock</span></div>
+
+      <div class="nav-group-label">OPERAÇÃO</div>
+      <nav class="main-nav">
+        <button data-view="painel" class="active"><span class="ico">◧</span> Painel</button>
+        <button data-view="estoque"><span class="ico">▤</span> Estoque</button>
+        <button data-view="entrada"><span class="ico">↓</span> Registrar entrada</button>
+        <button data-view="saida"><span class="ico">↑</span> Registrar saída</button>
+        <button data-view="historico"><span class="ico">≡</span> Histórico</button>
+      </nav>
+
+      <div class="nav-group-label">CADASTROS</div>
+      <nav class="main-nav">
+        <button data-view="categorias"><span class="ico">▢</span> Categorias</button>
+        <button data-view="funcionarios" id="nav-funcionarios"><span class="ico">◍</span> Funcionários</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="user-chip">
+          <div>
+            <div class="name" id="chip-nome">—</div>
+            <div class="role" id="chip-cargo">—</div>
+          </div>
+        </div>
+        <button id="btn-logout">Sair</button>
+      </div>
+    </aside>
+
+    <main id="app-main">
+      <!-- ============================= PAINEL ============================= -->
+      <section id="view-painel" class="view">
+        <div class="page-header">
+          <h1>Painel geral</h1>
+          <div class="sub">Visão consolidada do almoxarifado</div>
+        </div>
+
+        <div class="stats-row">
+          <div class="tag-card stat-card">
+            <div class="stat-label">ITENS EM ESTOQUE (UNIDADES)</div>
+            <div class="stat-value" id="stat-total-unidades">—</div>
+          </div>
+          <div class="tag-card stat-card">
+            <div class="stat-label">ABAIXO DO MÍNIMO</div>
+            <div class="stat-value alert" id="stat-abaixo-minimo">—</div>
+          </div>
+          <div class="tag-card stat-card">
+            <div class="stat-label">MOVIMENTAÇÕES HOJE</div>
+            <div class="stat-value" id="stat-mov-hoje">—</div>
+          </div>
+        </div>
+
+        <div class="quick-actions">
+          <button class="btn btn-moss" data-view="entrada">↓ Registrar entrada</button>
+          <button class="btn btn-rust" data-view="saida">↑ Registrar saída</button>
+          <button class="btn btn-ghost" data-view="estoque">Ver estoque completo</button>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header"><h2>Últimas movimentações</h2></div>
+          <div class="panel-body"><div id="painel-ultimas-mov"></div></div>
+        </div>
+      </section>
+
+      <!-- ============================= ESTOQUE ============================= -->
+      <section id="view-estoque" class="view hidden">
+        <div class="page-header">
+          <h1>Estoque</h1>
+          <div class="sub">Consulta de itens disponíveis — RF07 / UC005</div>
+        </div>
+
+        <div class="toolbar">
+          <input class="search-box" id="estoque-busca" placeholder="Buscar por item ou categoria…" />
+          <div class="flex gap-8">
+            <select id="estoque-filtro-categoria" style="width:auto;"><option value="">Todas as categorias</option></select>
+            <button class="btn btn-amber" id="btn-novo-item">+ Novo item</button>
+          </div>
+        </div>
+
+        <div class="panel"><div class="panel-body" style="padding-top:14px;"><div id="estoque-tabela"></div></div></div>
+      </section>
+
+      <!-- ============================= ENTRADA ============================= -->
+      <section id="view-entrada" class="view hidden">
+        <div class="page-header">
+          <h1>Registrar entrada</h1>
+          <div class="sub">Dá entrada de itens no estoque — RF05 / UC003</div>
+        </div>
+
+        <div class="tag-card" style="max-width:460px;">
+          <form id="form-entrada">
+            <div class="form-error" id="entrada-error"></div>
+            <div class="field">
+              <label for="entrada-item">Item</label>
+              <select id="entrada-item" required></select>
+            </div>
+            <div class="field">
+              <label for="entrada-quantidade">Quantidade</label>
+              <input type="number" id="entrada-quantidade" min="1" step="1" required />
+            </div>
+            <div class="field">
+              <label for="entrada-obs">Observação (opcional)</label>
+              <input type="text" id="entrada-obs" placeholder="Ex.: nota fiscal 1234" />
+            </div>
+            <button type="submit" class="btn btn-moss" style="width:100%;">↓ Confirmar entrada</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- ============================= SAÍDA ============================= -->
+      <section id="view-saida" class="view hidden">
+        <div class="page-header">
+          <h1>Registrar saída</h1>
+          <div class="sub">Dá saída de itens do estoque — RF06 / UC004</div>
+        </div>
+
+        <div class="tag-card" style="max-width:460px;">
+          <form id="form-saida">
+            <div class="form-error" id="saida-error"></div>
+            <div class="field">
+              <label for="saida-item">Item</label>
+              <select id="saida-item" required></select>
+            </div>
+            <div class="field" id="saida-disponivel-wrap" style="display:none;">
+              <span class="eyebrow-tag">Disponível: <b id="saida-disponivel">0</b></span>
+            </div>
+            <div class="field">
+              <label for="saida-quantidade">Quantidade</label>
+              <input type="number" id="saida-quantidade" min="1" step="1" required />
+            </div>
+            <div class="field">
+              <label for="saida-obs">Observação (opcional)</label>
+              <input type="text" id="saida-obs" placeholder="Ex.: uso na obra 12" />
+            </div>
+            <div class="eyebrow-tag" style="margin-bottom:14px;">Responsável: <b id="saida-responsavel">—</b></div>
+            <button type="submit" class="btn btn-rust" style="width:100%;">↑ Confirmar saída</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- ============================= HISTÓRICO ============================= -->
+      <section id="view-historico" class="view hidden">
+        <div class="page-header">
+          <h1>Histórico de movimentações</h1>
+          <div class="sub">Consulta completa — RF08 / UC006</div>
+        </div>
+
+        <div class="toolbar">
+          <select id="historico-tipo" style="width:auto;">
+            <option value="">Todos os tipos</option>
+            <option value="entrada">Entrada</option>
+            <option value="saida">Saída</option>
+          </select>
+          <div class="flex gap-8">
+            <input type="date" id="historico-inicio" style="width:auto;" />
+            <input type="date" id="historico-fim" style="width:auto;" />
+            <button class="btn btn-ghost" id="btn-historico-filtrar">Filtrar</button>
+          </div>
+        </div>
+
+        <div class="panel"><div class="panel-body" style="padding-top:14px;"><div id="historico-tabela"></div></div></div>
+      </section>
+
+      <!-- ============================= CATEGORIAS ============================= -->
+      <section id="view-categorias" class="view hidden">
+        <div class="page-header">
+          <h1>Categorias</h1>
+          <div class="sub">Organização dos itens — RF03</div>
+        </div>
+        <div class="toolbar">
+          <div></div>
+          <button class="btn btn-amber" id="btn-nova-categoria">+ Nova categoria</button>
+        </div>
+        <div class="panel"><div class="panel-body" style="padding-top:14px;"><div id="categorias-tabela"></div></div></div>
+      </section>
+
+      <!-- ============================= FUNCIONÁRIOS ============================= -->
+      <section id="view-funcionarios" class="view hidden">
+        <div class="page-header">
+          <h1>Funcionários</h1>
+          <div class="sub">Cadastro de acesso ao sistema — RF01 / UC007 / UC008</div>
+        </div>
+        <div class="toolbar">
+          <div></div>
+          <button class="btn btn-amber" id="btn-novo-funcionario">+ Novo funcionário</button>
+        </div>
+        <div class="panel"><div class="panel-body" style="padding-top:14px;"><div id="funcionarios-tabela"></div></div></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ============================= MODAIS ============================= -->
+
+  <div class="modal-backdrop" id="modal-item">
+    <div class="modal">
+      <h3 id="modal-item-titulo">Novo item</h3>
+      <div class="modal-sub">Preencha os dados do item do almoxarifado.</div>
+      <form id="form-item">
+        <div class="form-error" id="item-error"></div>
+        <input type="hidden" id="item-id" />
+        <div class="field"><label for="item-nome">Nome do item</label><input type="text" id="item-nome" required /></div>
+        <div class="field"><label for="item-categoria">Categoria</label><select id="item-categoria"><option value="">Sem categoria</option></select></div>
+        <div class="field-row">
+          <div class="field"><label for="item-quantidade">Quantidade inicial</label><input type="number" id="item-quantidade" min="0" step="1" value="0" /></div>
+          <div class="field"><label for="item-unidade">Unidade</label><input type="text" id="item-unidade" value="un" /></div>
+        </div>
+        <div class="field"><label for="item-qtd-min">Quantidade mínima (alerta)</label><input type="number" id="item-qtd-min" min="0" step="1" value="0" /></div>
+        <div class="field"><label for="item-descricao">Descrição (opcional)</label><textarea id="item-descricao" rows="2"></textarea></div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-close-modal="modal-item">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Salvar item</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="modal-categoria">
+    <div class="modal">
+      <h3 id="modal-categoria-titulo">Nova categoria</h3>
+      <div class="modal-sub">Categorias ajudam a organizar e localizar itens.</div>
+      <form id="form-categoria">
+        <div class="form-error" id="categoria-error"></div>
+        <input type="hidden" id="categoria-id" />
+        <div class="field"><label for="categoria-nome">Nome</label><input type="text" id="categoria-nome" required /></div>
+        <div class="field"><label for="categoria-descricao">Descrição (opcional)</label><textarea id="categoria-descricao" rows="2"></textarea></div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-close-modal="modal-categoria">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Salvar categoria</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="modal-funcionario">
+    <div class="modal">
+      <h3 id="modal-funcionario-titulo">Novo funcionário</h3>
+      <div class="modal-sub">Define o acesso de login ao sistema.</div>
+      <form id="form-funcionario">
+        <div class="form-error" id="funcionario-error"></div>
+        <input type="hidden" id="funcionario-id" />
+        <div class="field"><label for="funcionario-nome">Nome completo</label><input type="text" id="funcionario-nome" required /></div>
+        <div class="field"><label for="funcionario-email">E-mail</label><input type="email" id="funcionario-email" required /></div>
+        <div class="field"><label for="funcionario-senha" id="funcionario-senha-label">Senha</label><input type="password" id="funcionario-senha" placeholder="Mínimo 6 caracteres" /></div>
+        <div class="field"><label for="funcionario-cargo">Cargo</label>
+          <select id="funcionario-cargo">
+            <option value="funcionario">Funcionário</option>
+            <option value="gerente">Gerente</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-close-modal="modal-funcionario">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Salvar funcionário</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="modal-confirmar">
+    <div class="modal">
+      <h3 id="modal-confirmar-titulo">Confirmar exclusão</h3>
+      <div class="modal-sub" id="modal-confirmar-texto">Esta ação não pode ser desfeita.</div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-modal="modal-confirmar">Cancelar</button>
+        <button type="button" class="btn btn-rust" id="btn-confirmar-exclusao">Excluir</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast-region"></div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
