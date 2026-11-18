@@ -1,663 +1,572 @@
-// app.js — SmartStock: lógica do painel (UC002 a UC009)
+// app.js — SmartStock: toda a lógica da tela (navegação, chamadas à API, formulários)
+'use strict';
 
 // ---------------------------------------------------------------------
-// Sessão
+// Sessão e utilidades
 // ---------------------------------------------------------------------
-const token = localStorage.getItem('smartstock_token');
-const usuario = JSON.parse(localStorage.getItem('smartstock_usuario') || 'null');
+const TOKEN = localStorage.getItem('smartstock_token');
+let USUARIO = {};
+let EH_GERENTE = false;
+const ADMIN = ['funcionarios', 'cadastro', 'categorias']; // telas exclusivas do gerente
 
-if (!token || !usuario) {
-  window.location.href = 'login.html';
+const $ = (seletor) => document.querySelector(seletor);
+
+// Troca caracteres perigosos (<, >, &, aspas) para que um texto digitado nunca vire HTML.
+function esc(texto) {
+  return String(texto ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-const ehGerente = usuario?.cargo === 'gerente';
-
-// ---------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------
-async function api(caminho, opcoes = {}) {
-  const resp = await fetch(`/api${caminho}`, {
-    ...opcoes,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-      ...(opcoes.headers || {}),
-    },
-  });
-
-  if (resp.status === 401) {
-    localStorage.removeItem('smartstock_token');
-    localStorage.removeItem('smartstock_usuario');
-    window.location.href = 'login.html';
-    throw new Error('Sessão expirada');
-  }
-
-  const dados = await resp.json().catch(() => ({}));
-  if (!resp.ok) throw new Error(dados.erro || 'Erro ao comunicar com o servidor.');
-  return dados;
+function fmtDataHora(iso) {
+  return new Date(iso).toLocaleString('pt-BR');
 }
 
-function toast(mensagem, tipo = 'success') {
+// "2026-10-22" -> "22/10" (feito na mão, sem Date, para o dia não "andar" por causa do fuso)
+function fmtPrazo(texto) {
+  const [, mes, dia] = texto.split('-');
+  return `${dia}/${mes}`;
+}
+
+function hojeLocal() {
+  return new Date().toLocaleDateString('sv-SE'); // formato AAAA-MM-DD no fuso do navegador
+}
+
+function toast(mensagem, tipo = 'ok') {
   const el = document.createElement('div');
   el.className = `toast ${tipo}`;
   el.textContent = mensagem;
-  document.getElementById('toast-region').appendChild(el);
-  setTimeout(() => el.remove(), 3200);
+  $('#toasts').appendChild(el);
+  setTimeout(() => el.remove(), 3500);
 }
 
-function mostrarErro(idCaixa, mensagem) {
-  const box = document.getElementById(idCaixa);
-  box.textContent = mensagem;
-  box.classList.add('show');
-}
-function limparErro(idCaixa) {
-  document.getElementById(idCaixa).classList.remove('show');
+function sair() {
+  localStorage.removeItem('smartstock_token');
+  localStorage.removeItem('smartstock_usuario');
+  location.replace('login.html');
 }
 
-function escapar(texto) {
-  const div = document.createElement('div');
-  div.textContent = texto ?? '';
-  return div.innerHTML;
-}
-
-function formatarDataHora(iso) {
-  // O banco grava em UTC ("YYYY-MM-DD HH:MM:SS")
-  const d = new Date(iso);
-  return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+// Todas as chamadas ao servidor passam por aqui: já manda o token e trata o erro 401.
+async function api(caminho, { metodo = 'GET', corpo } = {}) {
+  const resp = await fetch('/api' + caminho, {
+    method: metodo,
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN },
+    body: corpo ? JSON.stringify(corpo) : undefined,
+  });
+  if (resp.status === 401) {
+    sair();
+    throw new Error('Sessão expirada. Entre novamente.');
+  }
+  const dados = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(dados.erro || 'Erro ao falar com o servidor.');
+  return dados;
 }
 
 function vazio(titulo, texto) {
-  return `<div class="empty-state"><div class="mark">${escapar(titulo)}</div><div>${escapar(texto)}</div></div>`;
+  return `<div class="vazio"><b>${esc(titulo)}</b>${esc(texto)}</div>`;
 }
 
-function abrirModal(id) { document.getElementById(id).classList.add('show'); }
-function fecharModal(id) { document.getElementById(id).classList.remove('show'); }
-
-document.querySelectorAll('[data-close-modal]').forEach((btn) => {
-  btn.addEventListener('click', () => fecharModal(btn.dataset.closeModal));
-});
-document.querySelectorAll('.modal-backdrop').forEach((bd) => {
-  bd.addEventListener('click', (e) => { if (e.target === bd) bd.classList.remove('show'); });
-});
+function mostrarErro(id, mensagem) {
+  const caixa = $(id);
+  caixa.textContent = mensagem;
+  caixa.classList.add('show');
+}
+const limparErro = (id) => $(id).classList.remove('show');
 
 // ---------------------------------------------------------------------
-// Cabeçalho / navegação
+// Modais
 // ---------------------------------------------------------------------
-document.getElementById('chip-nome').textContent = usuario.nome;
-document.getElementById('chip-cargo').textContent = ehGerente ? 'GERENTE' : 'FUNCIONÁRIO';
-document.getElementById('saida-responsavel').textContent = usuario.nome;
+function abrir(id) {
+  $(id).classList.add('show');
+  $(id).querySelector('input:not([type=hidden]), select')?.focus();
+}
+function fechar(id) { $(id).classList.remove('show'); }
 
-// Funcionários é área exclusiva do gerente (RF01)
-if (!ehGerente) {
-  document.getElementById('nav-funcionarios').classList.add('hidden');
-  document.getElementById('btn-novo-item').classList.add('hidden');
-  document.getElementById('btn-nova-categoria').classList.add('hidden');
+let acaoConfirmada = null;
+function confirmar(titulo, texto, rotulo, fn) {
+  $('#conf-titulo').textContent = titulo;
+  $('#conf-texto').textContent = texto;
+  $('#conf-ok').textContent = rotulo;
+  acaoConfirmada = fn;
+  abrir('#modal-confirmar');
+}
+$('#conf-ok').addEventListener('click', async () => {
+  const fn = acaoConfirmada;
+  acaoConfirmada = null;
+  fechar('#modal-confirmar');
+  try { await fn(); } catch (e) { toast(e.message, 'erro'); }
+});
+
+// Envolve o envio de um formulário: bloqueia o botão enquanto espera (evita clique duplo).
+async function enviar(form, erroId, fn) {
+  limparErro(erroId);
+  const botoes = form.querySelectorAll('button[type=submit]');
+  botoes.forEach((b) => (b.disabled = true));
+  try { await fn(); } catch (e) { mostrarErro(erroId, e.message); } finally { botoes.forEach((b) => (b.disabled = false)); }
 }
 
-document.getElementById('btn-logout').addEventListener('click', () => {
-  localStorage.removeItem('smartstock_token');
-  localStorage.removeItem('smartstock_usuario');
-  window.location.href = 'login.html';
-});
+// ---------------------------------------------------------------------
+// Navegação
+// ---------------------------------------------------------------------
+let viewAtual = 'inicio';
 
-const carregadores = {
-  painel: carregarPainel,
-  estoque: carregarEstoque,
-  entrada: carregarSelectsItens,
-  saida: carregarSelectsItens,
-  historico: carregarHistorico,
-  categorias: carregarCategorias,
-  funcionarios: carregarFuncionarios,
-};
-
-function irPara(view) {
-  document.querySelectorAll('.view').forEach((s) => s.classList.add('hidden'));
-  document.getElementById(`view-${view}`).classList.remove('hidden');
-
-  document.querySelectorAll('nav.main-nav button').forEach((b) => {
-    b.classList.toggle('active', b.dataset.view === view);
+function irPara(nome) {
+  if (!CARREGAR[nome] || (ADMIN.includes(nome) && !EH_GERENTE)) nome = 'inicio';
+  viewAtual = nome;
+  document.querySelectorAll('.view').forEach((s) => s.classList.toggle('hidden', s.id !== 'view-' + nome));
+  document.querySelectorAll('[data-ir]').forEach((b) => {
+    if (b.dataset.ir === nome) b.setAttribute('aria-current', 'page'); // destaque do item atual
+    else b.removeAttribute('aria-current');
   });
+  CARREGAR[nome]().catch((e) => toast(e.message, 'erro'));
+}
+const recarregar = () => irPara(viewAtual);
 
-  carregadores[view]?.();
+window.addEventListener('hashchange', () => irPara(location.hash.slice(1)));
+
+// ---------------------------------------------------------------------
+// INÍCIO
+// ---------------------------------------------------------------------
+function tabelaMov(movs, completo = false) {
+  const linhas = movs.map((m) => {
+    const tipo = m.tipo === 'entrada' ? '<span class="bd in">↓ ENTRADA</span>' : '<span class="bd out">↑ SAÍDA</span>';
+    return `<tr><td class="num fraco">${fmtDataHora(m.data_hora)}</td><td><b>${esc(m.item_nome)}</b></td><td>${tipo}</td>
+      <td class="num" style="text-align:right"><b>${m.quantidade}</b></td>${completo ? `<td>${esc(m.funcionario_nome)}</td>` : ''}
+      <td class="fraco"><i>${esc(m.observacao || '—')}</i></td></tr>`;
+  }).join('');
+  return `<table class="tbl"><thead><tr><th>DATA / HORA</th><th>ITEM</th><th>TIPO</th><th style="text-align:right">QTD.</th>${completo ? '<th>RESPONSÁVEL</th>' : ''}<th>OBSERVAÇÃO</th></tr></thead><tbody>${linhas}</tbody></table>`;
 }
 
-document.querySelectorAll('[data-view]').forEach((btn) => {
-  btn.addEventListener('click', () => irPara(btn.dataset.view));
-});
-
-// ---------------------------------------------------------------------
-// Estado compartilhado
-// ---------------------------------------------------------------------
-let cacheItens = [];
-let cacheCategorias = [];
-
-async function carregarCategoriasCache() {
-  cacheCategorias = await api('/categorias');
-  const selects = [
-    document.getElementById('item-categoria'),
-    document.getElementById('estoque-filtro-categoria'),
-  ];
-  selects.forEach((sel) => {
-    const valorAtual = sel.value;
-    const primeira = sel.id === 'item-categoria' ? 'Sem categoria' : 'Todas as categorias';
-    sel.innerHTML = `<option value="">${primeira}</option>` +
-      cacheCategorias.map((c) => `<option value="${c.id}">${escapar(c.nome)}</option>`).join('');
-    sel.value = valorAtual;
-  });
-}
-
-// ---------------------------------------------------------------------
-// PAINEL
-// ---------------------------------------------------------------------
-async function carregarPainel() {
-  try {
-    const [itens, movimentacoes] = await Promise.all([api('/itens'), api('/movimentacoes')]);
-    cacheItens = itens;
-
-    const totalUnidades = itens.reduce((s, i) => s + Number(i.quantidade), 0);
-    const abaixoMinimo = itens.filter((i) => Number(i.quantidade) <= i.quantidade_minima).length;
-    const hoje = new Date().toISOString().slice(0, 10);
-    const movHoje = movimentacoes.filter((m) => (m.criado_em || m.data_hora || '').slice(0, 10) === hoje).length;
-
-    document.getElementById('stat-total-unidades').textContent = totalUnidades.toLocaleString('pt-BR');
-    document.getElementById('stat-abaixo-minimo').textContent = abaixoMinimo;
-    document.getElementById('stat-mov-hoje').textContent = movHoje;
-
-    document.getElementById('painel-ultimas-mov').innerHTML =
-      movimentacoes.length === 0
-        ? vazio('Nenhuma movimentação registrada', 'As entradas e saídas aparecerão aqui.')
-        : tabelaMovimentacoes(movimentacoes.slice(0, 8));
-  } catch (err) {
-    toast(err.message, 'error');
-  }
+async function inicio() {
+  const [resumo, movs] = await Promise.all([api('/resumo'), api('/movimentacoes?minhas=true&limite=5')]);
+  $('#st-hoje').textContent = resumo.movimentacoes_hoje;
+  $('#st-falta').textContent = resumo.itens_em_falta;
+  $('#st-total').textContent = resumo.unidades_total;
+  $('#inicio-movs').innerHTML = movs.length
+    ? tabelaMov(movs)
+    : vazio('Você ainda não fez movimentações', 'Registre uma entrada ou saída na tela Movimentações.');
 }
 
 // ---------------------------------------------------------------------
 // ESTOQUE — UC005
 // ---------------------------------------------------------------------
-async function carregarEstoque() {
-  try {
-    await carregarCategoriasCache();
+let catsCache = [];
 
-    const busca = document.getElementById('estoque-busca').value.trim();
-    const categoriaId = document.getElementById('estoque-filtro-categoria').value;
-
-    const params = new URLSearchParams();
-    if (busca) params.set('busca', busca);
-    if (categoriaId) params.set('categoria_id', categoriaId);
-
-    const itens = await api(`/itens?${params}`);
-    cacheItens = itens;
-
-    // [UC005.FS001] Item não encontrado
-    if (itens.length === 0) {
-      document.getElementById('estoque-tabela').innerHTML = busca || categoriaId
-        ? vazio('Nenhum item encontrado', 'Nenhum item corresponde à pesquisa. Tente outros termos.')
-        : vazio('Estoque vazio', 'Cadastre o primeiro item para começar.');
-      return;
-    }
-
-    document.getElementById('estoque-tabela').innerHTML = `
-      <table class="manifest">
-        <thead>
-          <tr>
-            <th>ITEM</th><th>CATEGORIA</th><th>QTD.</th><th>MÍNIMO</th><th>SITUAÇÃO</th>
-            ${ehGerente ? '<th style="text-align:right;">AÇÕES</th>' : ''}
-          </tr>
-        </thead>
-        <tbody>
-          ${itens.map((i) => `
-            <tr>
-              <td><b>${escapar(i.nome)}</b>${i.descricao ? `<div style="font-size:12px;color:var(--ink-soft);">${escapar(i.descricao)}</div>` : ''}</td>
-              <td>${escapar(i.categoria_nome || '—')}</td>
-              <td class="num">${i.quantidade} ${escapar(i.unidade)}</td>
-              <td class="num">${i.quantidade_minima}</td>
-              <td>${Number(i.quantidade) <= Number(i.quantidade_minima)
-                    ? '<span class="badge badge-alerta">REPOR</span>'
-                    : '<span class="badge badge-ok">OK</span>'}</td>
-              ${ehGerente ? `<td style="text-align:right;white-space:nowrap;">
-                  <button class="btn btn-ghost btn-sm" onclick="editarItem(${i.id})">Editar</button>
-                  <button class="btn-danger-text" onclick="confirmarExclusaoItem(${i.id}, '${escapar(i.nome).replace(/'/g, "\\'")}')">Excluir</button>
-                </td>` : ''}
-            </tr>`).join('')}
-        </tbody>
-      </table>`;
-  } catch (err) {
-    toast(err.message, 'error');
-  }
-}
-
-let debounceBusca;
-document.getElementById('estoque-busca').addEventListener('input', () => {
-  clearTimeout(debounceBusca);
-  debounceBusca = setTimeout(carregarEstoque, 300);
-});
-document.getElementById('estoque-filtro-categoria').addEventListener('change', carregarEstoque);
-
-// -- UC002 / UC008: cadastrar e alterar item --------------------------
-document.getElementById('btn-novo-item').addEventListener('click', async () => {
-  await carregarCategoriasCache();
-  document.getElementById('modal-item-titulo').textContent = 'Novo item';
-  document.getElementById('form-item').reset();
-  document.getElementById('item-id').value = '';
-  document.getElementById('item-quantidade').parentElement.style.display = '';
-  limparErro('item-error');
-  abrirModal('modal-item');
-});
-
-window.editarItem = async (id) => {
-  await carregarCategoriasCache();
-  const item = cacheItens.find((i) => i.id === id);
-  if (!item) return;
-
-  document.getElementById('modal-item-titulo').textContent = 'Editar item';
-  document.getElementById('item-id').value = item.id;
-  document.getElementById('item-nome').value = item.nome;
-  document.getElementById('item-categoria').value = item.categoria_id || '';
-  document.getElementById('item-unidade').value = item.unidade;
-  document.getElementById('item-qtd-min').value = item.quantidade_minima;
-  document.getElementById('item-descricao').value = item.descricao || '';
-
-  // A quantidade só muda por entrada/saída — não é editável diretamente.
-  document.getElementById('item-quantidade').parentElement.style.display = 'none';
-
-  limparErro('item-error');
-  abrirModal('modal-item');
-};
-
-document.getElementById('form-item').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  limparErro('item-error');
-
-  const id = document.getElementById('item-id').value;
-  const corpo = {
-    nome: document.getElementById('item-nome').value.trim(),
-    categoria_id: document.getElementById('item-categoria').value || null,
-    unidade: document.getElementById('item-unidade').value.trim() || 'un',
-    quantidade_minima: Number(document.getElementById('item-qtd-min').value || 0),
-    descricao: document.getElementById('item-descricao').value.trim() || null,
-  };
-
-  // [UC002.FS001] Dados inválidos ou incompletos
-  if (!corpo.nome) return mostrarErro('item-error', 'O nome do item é obrigatório.');
-
-  if (!id) corpo.quantidade = Number(document.getElementById('item-quantidade').value || 0);
-
-  try {
-    await api(id ? `/itens/${id}` : '/itens', {
-      method: id ? 'PUT' : 'POST',
-      body: JSON.stringify(corpo),
-    });
-    fecharModal('modal-item');
-    toast(id ? 'Item atualizado com sucesso.' : 'Item cadastrado com sucesso.');
-    carregarEstoque();
-  } catch (err) {
-    mostrarErro('item-error', err.message);
-  }
-});
-
-// -- UC009: excluir item (com confirmação) ----------------------------
-let acaoConfirmacao = null;
-
-window.confirmarExclusaoItem = (id, nome) => {
-  document.getElementById('modal-confirmar-titulo').textContent = 'Excluir item';
-  document.getElementById('modal-confirmar-texto').textContent =
-    `Deseja realmente excluir "${nome}"? O histórico de movimentações será preservado.`;
-  acaoConfirmacao = async () => {
-    await api(`/itens/${id}`, { method: 'DELETE' });
-    toast('Item excluído com sucesso.');
-    carregarEstoque();
-  };
-  abrirModal('modal-confirmar');
-};
-
-document.getElementById('btn-confirmar-exclusao').addEventListener('click', async () => {
-  if (!acaoConfirmacao) return;
-  try {
-    await acaoConfirmacao();
-    fecharModal('modal-confirmar');
-  } catch (err) {
-    toast(err.message, 'error');
-  } finally {
-    acaoConfirmacao = null;
-  }
-});
-
-// ---------------------------------------------------------------------
-// ENTRADA / SAÍDA — UC003 e UC004
-// ---------------------------------------------------------------------
-async function carregarSelectsItens() {
-  try {
-    const itens = await api('/itens');
-    cacheItens = itens;
-
-    const selEntrada = document.getElementById('entrada-item');
-    const selSaida = document.getElementById('saida-item');
-
-    if (itens.length === 0) {
-      const aviso = '<option value="">Nenhum item cadastrado</option>';
-      selEntrada.innerHTML = aviso;
-      selSaida.innerHTML = aviso;
-      return;
-    }
-
-    selEntrada.innerHTML = '<option value="">Selecione um item…</option>' +
-      itens.map((i) => `<option value="${i.id}">${escapar(i.nome)} — ${i.quantidade} ${escapar(i.unidade)}</option>`).join('');
-
-    // Na saída, o sistema apresenta os itens disponíveis (fluxo principal, passo 2)
-    const disponiveis = itens.filter((i) => i.quantidade > 0);
-    selSaida.innerHTML = disponiveis.length === 0
-      ? '<option value="">Nenhum item disponível em estoque</option>'
-      : '<option value="">Selecione um item…</option>' +
-        disponiveis.map((i) => `<option value="${i.id}" data-qtd="${i.quantidade}">${escapar(i.nome)} — ${i.quantidade} ${escapar(i.unidade)}</option>`).join('');
-  } catch (err) {
-    toast(err.message, 'error');
-  }
-}
-
-document.getElementById('saida-item').addEventListener('change', (e) => {
-  const item = cacheItens.find((i) => i.id === Number(e.target.value));
-  const wrap = document.getElementById('saida-disponivel-wrap');
-  if (item) {
-    document.getElementById('saida-disponivel').textContent = `${item.quantidade} ${item.unidade}`;
-    document.getElementById('saida-quantidade').max = item.quantidade;
-    wrap.style.display = '';
-  } else {
-    wrap.style.display = 'none';
-  }
-});
-
-// UC003 — Registrar entrada
-document.getElementById('form-entrada').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  limparErro('entrada-error');
-
-  const item_id = document.getElementById('entrada-item').value;
-  const quantidade = Number(document.getElementById('entrada-quantidade').value);
-
-  // [UC003.FS001] Quantidade inválida
-  if (!item_id) return mostrarErro('entrada-error', 'Selecione um item.');
-  if (!Number.isInteger(quantidade) || quantidade <= 0) {
-    return mostrarErro('entrada-error', 'Informe uma quantidade válida (número inteiro maior que zero).');
-  }
-
-  try {
-    const r = await api('/movimentacoes/entrada', {
-      method: 'POST',
-      body: JSON.stringify({ item_id: Number(item_id), quantidade, observacao: document.getElementById('entrada-obs').value.trim() }),
-    });
-    toast(`Entrada registrada. Novo saldo: ${r.item.quantidade} ${r.item.unidade}.`);
-    document.getElementById('form-entrada').reset();
-    carregarSelectsItens();
-  } catch (err) {
-    mostrarErro('entrada-error', err.message);
-  }
-});
-
-// UC004 — Registrar saída
-document.getElementById('form-saida').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  limparErro('saida-error');
-
-  const item_id = document.getElementById('saida-item').value;
-  const quantidade = Number(document.getElementById('saida-quantidade').value);
-
-  if (!item_id) return mostrarErro('saida-error', 'Selecione um item.');
-  if (!Number.isInteger(quantidade) || quantidade <= 0) {
-    return mostrarErro('saida-error', 'Informe uma quantidade válida (número inteiro maior que zero).');
-  }
-
-  // [UC004.FS001] Quantidade maior que o estoque disponível (validado também no servidor)
-  const item = cacheItens.find((i) => i.id === Number(item_id));
-  if (item && quantidade > item.quantidade) {
-    return mostrarErro('saida-error', `Quantidade disponível insuficiente. Estoque atual: ${item.quantidade} ${item.unidade}.`);
-  }
-
-  try {
-    const r = await api('/movimentacoes/saida', {
-      method: 'POST',
-      body: JSON.stringify({ item_id: Number(item_id), quantidade, observacao: document.getElementById('saida-obs').value.trim() }),
-    });
-    toast(`Saída registrada. Novo saldo: ${r.item.quantidade} ${r.item.unidade}.`);
-    document.getElementById('form-saida').reset();
-    document.getElementById('saida-disponivel-wrap').style.display = 'none';
-    carregarSelectsItens();
-  } catch (err) {
-    mostrarErro('saida-error', err.message);
-  }
-});
-
-// ---------------------------------------------------------------------
-// HISTÓRICO — UC006
-// ---------------------------------------------------------------------
-function tabelaMovimentacoes(movimentacoes) {
-  return `
-    <table class="manifest">
-      <thead>
-        <tr><th>DATA / HORA</th><th>TIPO</th><th>ITEM</th><th>QTD.</th><th>RESPONSÁVEL</th><th>OBSERVAÇÃO</th></tr>
-      </thead>
-      <tbody>
-        ${movimentacoes.map((m) => `
-          <tr>
-            <td class="num">${formatarDataHora(m.criado_em || m.data_hora)}</td>
-            <td><span class="badge badge-${m.tipo}">${m.tipo === 'entrada' ? '↓ ENTRADA' : '↑ SAÍDA'}</span></td>
-            <td>${escapar(m.item_nome)}</td>
-            <td class="num">${m.quantidade}${escapar(m.unidade)}</td>
-            <td>${escapar(m.funcionario_nome)}</td>
-            <td style="color:var(--ink-soft);">${escapar(m.observacao || '—')}</td>
-          </tr>`).join('')}
-      </tbody>
-    </table>`;
-}
-
-async function carregarHistorico() {
-  try {
-    const params = new URLSearchParams();
-    const tipo = document.getElementById('historico-tipo').value;
-    const inicio = document.getElementById('historico-inicio').value;
-    const fim = document.getElementById('historico-fim').value;
-    if (tipo) params.set('tipo', tipo);
-    if (inicio) params.set('dataInicio', inicio);
-    if (fim) params.set('dataFim', fim);
-
-    const movimentacoes = await api(`/movimentacoes?${params}`);
-
-    // [UC006.FS001] Nenhuma movimentação encontrada
-    document.getElementById('historico-tabela').innerHTML = movimentacoes.length === 0
-      ? vazio('Nenhuma movimentação encontrada', 'Não há movimentações registradas para os filtros selecionados.')
-      : tabelaMovimentacoes(movimentacoes);
-  } catch (err) {
-    toast(err.message, 'error');
-  }
-}
-
-document.getElementById('btn-historico-filtrar').addEventListener('click', carregarHistorico);
-document.getElementById('historico-tipo').addEventListener('change', carregarHistorico);
-
-// ---------------------------------------------------------------------
-// CATEGORIAS — RF03
-// ---------------------------------------------------------------------
 async function carregarCategorias() {
-  try {
-    await carregarCategoriasCache();
-
-    document.getElementById('categorias-tabela').innerHTML = cacheCategorias.length === 0
-      ? vazio('Nenhuma categoria cadastrada', 'Crie categorias para organizar os itens do almoxarifado.')
-      : `<table class="manifest">
-          <thead><tr><th>NOME</th><th>DESCRIÇÃO</th>${ehGerente ? '<th style="text-align:right;">AÇÕES</th>' : ''}</tr></thead>
-          <tbody>
-            ${cacheCategorias.map((c) => `
-              <tr>
-                <td><b>${escapar(c.nome)}</b></td>
-                <td style="color:var(--ink-soft);">${escapar(c.descricao || '—')}</td>
-                ${ehGerente ? `<td style="text-align:right;white-space:nowrap;">
-                    <button class="btn btn-ghost btn-sm" onclick="editarCategoria(${c.id})">Editar</button>
-                    <button class="btn-danger-text" onclick="confirmarExclusaoCategoria(${c.id}, '${escapar(c.nome).replace(/'/g, "\\'")}')">Excluir</button>
-                  </td>` : ''}
-              </tr>`).join('')}
-          </tbody>
-        </table>`;
-  } catch (err) {
-    toast(err.message, 'error');
-  }
+  catsCache = await api('/categorias');
+  const opcoes = catsCache.map((c) => `<option value="${c.id}">${esc(c.nome)}</option>`).join('');
+  [['#est-categoria', 'Todas'], ['#cad-categoria', 'Sem categoria'], ['#item-categoria', 'Sem categoria']].forEach(([id, primeira]) => {
+    const sel = $(id);
+    const valor = sel.value;
+    sel.innerHTML = `<option value="">${primeira}</option>${opcoes}`;
+    sel.value = valor;
+  });
 }
 
-document.getElementById('btn-nova-categoria').addEventListener('click', () => {
-  document.getElementById('modal-categoria-titulo').textContent = 'Nova categoria';
-  document.getElementById('form-categoria').reset();
-  document.getElementById('categoria-id').value = '';
-  limparErro('categoria-error');
-  abrirModal('modal-categoria');
-});
+let itensEstoque = [];
 
-window.editarCategoria = (id) => {
-  const c = cacheCategorias.find((x) => x.id === id);
-  if (!c) return;
-  document.getElementById('modal-categoria-titulo').textContent = 'Editar categoria';
-  document.getElementById('categoria-id').value = c.id;
-  document.getElementById('categoria-nome').value = c.nome;
-  document.getElementById('categoria-descricao').value = c.descricao || '';
-  limparErro('categoria-error');
-  abrirModal('modal-categoria');
-};
+async function tabelaEstoque() {
+  const p = new URLSearchParams();
+  const busca = $('#est-busca').value.trim();
+  if (busca) p.set('busca', busca);
+  if ($('#est-categoria').value) p.set('categoria_id', $('#est-categoria').value);
+  p.set('ordem', $('#est-ordem').value);
 
-document.getElementById('form-categoria').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  limparErro('categoria-error');
-
-  const id = document.getElementById('categoria-id').value;
-  const nome = document.getElementById('categoria-nome').value.trim();
-  if (!nome) return mostrarErro('categoria-error', 'O nome da categoria é obrigatório.');
-
-  try {
-    await api(id ? `/categorias/${id}` : '/categorias', {
-      method: id ? 'PUT' : 'POST',
-      body: JSON.stringify({ nome, descricao: document.getElementById('categoria-descricao').value.trim() || null }),
-    });
-    fecharModal('modal-categoria');
-    toast(id ? 'Categoria atualizada.' : 'Categoria cadastrada.');
-    carregarCategorias();
-  } catch (err) {
-    mostrarErro('categoria-error', err.message);
+  itensEstoque = await api('/itens?' + p);
+  if (itensEstoque.length === 0) { // [UC005.FS001] Item não encontrado
+    $('#est-tabela').innerHTML = busca || $('#est-categoria').value
+      ? vazio('Nenhum item encontrado', 'Nenhum item corresponde à pesquisa. Tente outros termos.')
+      : vazio('Estoque vazio', 'Peça a um gerente para cadastrar os primeiros itens.');
+    return;
   }
-});
-
-window.confirmarExclusaoCategoria = (id, nome) => {
-  document.getElementById('modal-confirmar-titulo').textContent = 'Excluir categoria';
-  document.getElementById('modal-confirmar-texto').textContent =
-    `Deseja excluir a categoria "${nome}"? Os itens dela ficarão sem categoria.`;
-  acaoConfirmacao = async () => {
-    await api(`/categorias/${id}`, { method: 'DELETE' });
-    toast('Categoria excluída.');
-    carregarCategorias();
-  };
-  abrirModal('modal-confirmar');
-};
-
-// ---------------------------------------------------------------------
-// FUNCIONÁRIOS — UC007 / UC008 (somente gerente)
-// ---------------------------------------------------------------------
-let cacheFuncionarios = [];
-
-async function carregarFuncionarios() {
-  if (!ehGerente) return;
-  try {
-    cacheFuncionarios = await api('/funcionarios');
-
-    document.getElementById('funcionarios-tabela').innerHTML = cacheFuncionarios.length === 0
-      ? vazio('Nenhum funcionário cadastrado', 'Cadastre funcionários para dar acesso ao sistema.')
-      : `<table class="manifest">
-          <thead><tr><th>NOME</th><th>E-MAIL</th><th>CARGO</th><th>SITUAÇÃO</th><th style="text-align:right;">AÇÕES</th></tr></thead>
-          <tbody>
-            ${cacheFuncionarios.map((f) => `
-              <tr style="${f.ativo ? '' : 'opacity:0.5;'}">
-                <td><b>${escapar(f.nome)}</b></td>
-                <td style="color:var(--ink-soft);">${escapar(f.email)}</td>
-                <td><span class="badge badge-${f.cargo}">${f.cargo === 'gerente' ? 'GERENTE' : 'FUNCIONÁRIO'}</span></td>
-                <td>${f.ativo ? 'Ativo' : 'Inativo'}</td>
-                <td style="text-align:right;white-space:nowrap;">
-                  <button class="btn btn-ghost btn-sm" onclick="editarFuncionario(${f.id})">Editar</button>
-                  ${f.ativo && f.id !== usuario.id
-                      ? `<button class="btn-danger-text" onclick="confirmarExclusaoFuncionario(${f.id}, '${escapar(f.nome).replace(/'/g, "\\'")}')">Desativar</button>`
-                      : ''}
-                </td>
-              </tr>`).join('')}
-          </tbody>
-        </table>`;
-  } catch (err) {
-    toast(err.message, 'error');
-  }
+  const gerente = (i) => `<button class="chip c-ed" data-acao="editar-item" data-id="${i.id}">Editar</button><button class="chip c-out" data-acao="apagar-item" data-id="${i.id}">Excluir</button>`;
+  $('#est-tabela').innerHTML = `<table class="tbl"><thead><tr><th>ITEM</th><th>CATEGORIA</th><th style="text-align:right">QTD.</th><th>MÍNIMO</th><th>SITUAÇÃO</th><th style="text-align:center">AÇÕES</th></tr></thead><tbody>${
+    itensEstoque.map((i) => `<tr><td><b>${esc(i.nome)}</b></td><td>${esc(i.categoria_nome || '—')}</td>
+      <td class="num" style="text-align:right"><b>${i.quantidade}</b> <span class="fraco">${esc(i.unidade)}</span></td>
+      <td class="num fraco">${i.quantidade_minima}</td>
+      <td>${i.quantidade <= i.quantidade_minima ? '<span class="bd out">ABAIXO DO MÍN.</span>' : '<span class="bd in">OK</span>'}</td>
+      <td class="acoes"><button class="chip c-in" data-acao="mov" data-tipo="entrada" data-item="${i.id}">+ Entrada</button><button class="chip c-out" data-acao="mov" data-tipo="saida" data-item="${i.id}">- Saída</button>${EH_GERENTE ? gerente(i) : ''}</td></tr>`).join('')}</tbody></table>`;
 }
 
-document.getElementById('btn-novo-funcionario').addEventListener('click', () => {
-  document.getElementById('modal-funcionario-titulo').textContent = 'Novo funcionário';
-  document.getElementById('form-funcionario').reset();
-  document.getElementById('funcionario-id').value = '';
-  document.getElementById('funcionario-senha-label').textContent = 'Senha';
-  document.getElementById('funcionario-senha').required = true;
-  limparErro('funcionario-error');
-  abrirModal('modal-funcionario');
+async function estoque() {
+  await carregarCategorias();
+  await tabelaEstoque();
+}
+
+let esperaBusca;
+$('#est-busca').addEventListener('input', () => {
+  clearTimeout(esperaBusca);
+  esperaBusca = setTimeout(() => tabelaEstoque().catch((e) => toast(e.message, 'erro')), 300);
+});
+['#est-categoria', '#est-ordem'].forEach((id) => $(id).addEventListener('change', () => tabelaEstoque().catch((e) => toast(e.message, 'erro'))));
+
+// ---------------------------------------------------------------------
+// CHECKLISTS (de cada usuário)
+// ---------------------------------------------------------------------
+let checksCache = [];
+
+async function checklists() {
+  $('#ck-nome').textContent = USUARIO.nome || '';
+  checksCache = await api('/checklists');
+  const feitos = checksCache.filter((c) => c.concluido).length;
+  $('#ck-contador').textContent = checksCache.length ? `${feitos} de ${checksCache.length} concluídos` : '';
+
+  if (checksCache.length === 0) {
+    $('#ck-lista').innerHTML = vazio('Nenhum item no seu checklist', 'Use o botão abaixo para criar o primeiro.');
+    return;
+  }
+  const hoje = hojeLocal();
+  $('#ck-lista').innerHTML = `<table class="tbl"><thead><tr><th></th><th>ITEM</th><th>PRAZO</th><th></th></tr></thead><tbody>${
+    checksCache.map((c) => {
+      const atrasado = c.prazo && !c.concluido && c.prazo < hoje;
+      return `<tr>
+        <td><input type="checkbox" data-check="${c.id}" ${c.concluido ? 'checked' : ''} aria-label="Concluir: ${esc(c.titulo)}"></td>
+        <td class="${c.concluido ? 'feito' : 'pendente'}">${esc(c.titulo)}</td>
+        <td class="prazo ${atrasado ? 'atrasado' : 'fraco'}">${c.prazo ? fmtPrazo(c.prazo) + (atrasado ? ' · atrasado' : '') : '—'}</td>
+        <td class="acoes"><button class="btn-link neutro" data-acao="editar-check" data-id="${c.id}">Editar</button>
+          <button class="btn-link" data-acao="apagar-check" data-id="${c.id}">Excluir</button></td></tr>`;
+    }).join('')}</tbody></table>`;
+}
+
+document.addEventListener('change', async (e) => {
+  if (!e.target.matches('[data-check]')) return;
+  try {
+    await api('/checklists/' + e.target.dataset.check, { metodo: 'PUT', corpo: { concluido: e.target.checked } });
+  } catch (erro) {
+    toast(erro.message, 'erro');
+  }
+  checklists().catch((erro) => toast(erro.message, 'erro'));
 });
 
-window.editarFuncionario = (id) => {
-  const f = cacheFuncionarios.find((x) => x.id === id);
-  if (!f) return;
-  document.getElementById('modal-funcionario-titulo').textContent = 'Editar funcionário';
-  document.getElementById('funcionario-id').value = f.id;
-  document.getElementById('funcionario-nome').value = f.nome;
-  document.getElementById('funcionario-email').value = f.email;
-  document.getElementById('funcionario-cargo').value = f.cargo;
-  document.getElementById('funcionario-senha').value = '';
-  document.getElementById('funcionario-senha-label').textContent = 'Nova senha (deixe em branco para manter)';
-  document.getElementById('funcionario-senha').required = false;
-  limparErro('funcionario-error');
-  abrirModal('modal-funcionario');
-};
+function abrirCheck(item) {
+  $('#check-titulo').textContent = item ? 'Editar item do checklist' : 'Novo item do checklist';
+  $('#check-id').value = item ? item.id : '';
+  $('#check-texto').value = item ? item.titulo : '';
+  $('#check-prazo').value = item?.prazo || '';
+  limparErro('#check-erro');
+  abrir('#modal-check');
+}
 
-document.getElementById('form-funcionario').addEventListener('submit', async (e) => {
+$('#form-check').addEventListener('submit', (e) => {
   e.preventDefault();
-  limparErro('funcionario-error');
+  enviar(e.currentTarget, '#check-erro', async () => {
+    const id = $('#check-id').value;
+    const corpo = { titulo: $('#check-texto').value.trim(), prazo: $('#check-prazo').value || null };
+    if (!corpo.titulo) throw new Error('Informe o que precisa ser feito.');
+    await api(id ? '/checklists/' + id : '/checklists', { metodo: id ? 'PUT' : 'POST', corpo });
+    fechar('#modal-check');
+    toast(id ? 'Item atualizado.' : 'Item adicionado ao checklist.');
+    await checklists();
+  });
+});
 
-  const id = document.getElementById('funcionario-id').value;
-  const nome = document.getElementById('funcionario-nome').value.trim();
-  const email = document.getElementById('funcionario-email').value.trim();
-  const senha = document.getElementById('funcionario-senha').value;
-  const cargo = document.getElementById('funcionario-cargo').value;
+// ---------------------------------------------------------------------
+// MOVIMENTAÇÕES — UC003, UC004, UC006
+// ---------------------------------------------------------------------
+async function movimentacoes() {
+  const p = new URLSearchParams();
+  if ($('#mov-tipo').value) p.set('tipo', $('#mov-tipo').value);
+  if ($('#mov-inicio').value) p.set('dataInicio', $('#mov-inicio').value);
+  if ($('#mov-fim').value) p.set('dataFim', $('#mov-fim').value);
+  if ($('#mov-minhas').checked) p.set('minhas', 'true');
 
-  // [UC007.FS001] / [UC008.FS001] Dados inválidos ou incompletos
-  if (!nome || !email) return mostrarErro('funcionario-error', 'Nome e e-mail são obrigatórios.');
-  if (!id && senha.length < 6) return mostrarErro('funcionario-error', 'A senha deve ter ao menos 6 caracteres.');
-  if (id && senha && senha.length < 6) return mostrarErro('funcionario-error', 'A nova senha deve ter ao menos 6 caracteres.');
+  const movs = await api('/movimentacoes?' + p);
+  $('#mov-tabela').innerHTML = movs.length === 0 // [UC006.FS001] Nenhuma movimentação encontrada
+    ? vazio('Nenhuma movimentação encontrada', 'Não há movimentações para os filtros escolhidos.')
+    : tabelaMov(movs, true);
+}
+['#mov-tipo', '#mov-inicio', '#mov-fim', '#mov-minhas'].forEach((id) =>
+  $(id).addEventListener('change', () => movimentacoes().catch((e) => toast(e.message, 'erro'))));
 
-  const corpo = { nome, email, cargo };
-  if (senha) corpo.senha = senha;
+let itensMov = [];
+let tipoMov = 'entrada';
 
-  try {
-    await api(id ? `/funcionarios/${id}` : '/funcionarios', {
-      method: id ? 'PUT' : 'POST',
-      body: JSON.stringify(corpo),
+async function abrirMov(tipo, itemId) {
+  tipoMov = tipo;
+  itensMov = await api('/itens?ordem=az');
+  const lista = tipo === 'saida' ? itensMov.filter((i) => i.quantidade > 0) : itensMov; // na saída, só itens com estoque
+  if (lista.length === 0) {
+    toast(tipo === 'saida' ? 'Não há itens com estoque disponível.' : 'Não há itens cadastrados.', 'erro');
+    return;
+  }
+  $('#mov-titulo').textContent = tipo === 'entrada' ? 'Registrar entrada' : 'Registrar saída';
+  $('#mov-sub').textContent = tipo === 'entrada' ? 'Dá entrada de itens no estoque.' : 'Dá saída de itens do estoque.';
+  $('#mov-item').innerHTML = lista.map((i) => `<option value="${i.id}">${esc(i.nome)}</option>`).join('');
+  if (itemId) { // veio do botão da linha do Estoque: já deixa o item escolhido
+    if (!lista.some((i) => i.id === Number(itemId))) { toast('Este item não tem estoque para saída.', 'erro'); return; }
+    $('#mov-item').value = itemId;
+  }
+  $('#mov-qtd').value = '';
+  $('#mov-obs').value = '';
+  $('#mov-resp').textContent = tipo === 'saida' ? `Responsável pela retirada: ${USUARIO.nome}` : '';
+  $('#mov-confirmar').className = tipo === 'entrada' ? 'btn btn-moss' : 'btn btn-rust';
+  $('#mov-confirmar').textContent = tipo === 'entrada' ? '↓ Confirmar entrada' : '↑ Confirmar saída';
+  atualizarDisponivel();
+  limparErro('#mov-erro');
+  abrir('#modal-mov');
+}
+
+function atualizarDisponivel() {
+  const item = itensMov.find((i) => i.id === Number($('#mov-item').value));
+  $('#mov-disp').textContent = item ? `Em estoque agora: ${item.quantidade} ${item.unidade}` : '';
+  if (tipoMov === 'saida' && item) $('#mov-qtd').max = item.quantidade; else $('#mov-qtd').removeAttribute('max');
+}
+$('#mov-item').addEventListener('change', atualizarDisponivel);
+
+$('#form-mov').addEventListener('submit', (e) => {
+  e.preventDefault();
+  enviar(e.currentTarget, '#mov-erro', async () => {
+    const quantidade = Number($('#mov-qtd').value);
+    // [UC003.FS001] Quantidade inválida
+    if (!Number.isInteger(quantidade) || quantidade <= 0) throw new Error('Informe uma quantidade válida (inteiro maior que zero).');
+    const resposta = await api('/movimentacoes/' + tipoMov, {
+      metodo: 'POST',
+      corpo: { item_id: Number($('#mov-item').value), quantidade, observacao: $('#mov-obs').value.trim() },
     });
-    fecharModal('modal-funcionario');
+    fechar('#modal-mov');
+    toast(`${resposta.mensagem} Novo saldo: ${resposta.item.quantidade} ${resposta.item.unidade}.`);
+    recarregar();
+  });
+});
+
+// ---------------------------------------------------------------------
+// USUÁRIO
+// ---------------------------------------------------------------------
+async function usuario() {
+  const eu = await api('/auth/me');
+  $('#usr-nome').textContent = eu.nome;
+  $('#usr-email').textContent = eu.email;
+  $('#usr-cargo').innerHTML = eu.cargo === 'gerente' ? '<span class="bd gerente">GERENTE</span>' : '<span class="bd func">FUNCIONÁRIO</span>';
+}
+
+$('#form-senha').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  enviar(form, '#senha-erro', async () => {
+    const nova = $('#senha-nova').value;
+    if (nova.length < 6) throw new Error('A nova senha deve ter ao menos 6 caracteres.');
+    if (nova !== $('#senha-conf').value) throw new Error('A confirmação não é igual à nova senha.');
+    await api('/auth/senha', { metodo: 'PUT', corpo: { senha_atual: $('#senha-atual').value, senha_nova: nova } });
+    form.reset();
+    toast('Senha alterada com sucesso.');
+  });
+});
+
+// ---------------------------------------------------------------------
+// FUNCIONÁRIOS — UC007, UC008 (gerente)
+// ---------------------------------------------------------------------
+let funcsCache = [];
+
+async function funcionarios() {
+  funcsCache = await api('/funcionarios');
+  $('#func-tabela').innerHTML = `<table class="tbl"><thead><tr><th>NOME</th><th>E-MAIL</th><th>CARGO</th><th>SITUAÇÃO</th><th></th></tr></thead><tbody>${
+    funcsCache.map((f) => `<tr style="${f.ativo ? '' : 'opacity:.55'}">
+      <td><b>${esc(f.nome)}</b></td><td class="fraco">${esc(f.email)}</td>
+      <td>${f.cargo === 'gerente' ? '<span class="bd gerente">GERENTE</span>' : '<span class="bd func">FUNCIONÁRIO</span>'}</td>
+      <td>${f.ativo ? 'Ativo' : 'Inativo'}</td>
+      <td class="acoes"><button class="btn-link neutro" data-acao="editar-func" data-id="${f.id}">Editar</button>${
+        f.id === USUARIO.id ? '' : f.ativo
+          ? `<button class="btn-link" data-acao="desativar-func" data-id="${f.id}">Desativar</button>`
+          : `<button class="btn-link neutro" data-acao="reativar-func" data-id="${f.id}">Reativar</button>`}</td></tr>`).join('')}</tbody></table>`;
+}
+
+function abrirFunc(f) {
+  $('#func-titulo').textContent = f ? 'Editar funcionário' : 'Novo funcionário';
+  $('#func-id').value = f ? f.id : '';
+  $('#func-nome').value = f ? f.nome : '';
+  $('#func-email').value = f ? f.email : '';
+  $('#func-cargo').value = f ? f.cargo : 'funcionario';
+  $('#func-senha').value = '';
+  $('#func-senha-lab').textContent = f ? 'NOVA SENHA (DEIXE EM BRANCO PARA MANTER)' : 'SENHA';
+  limparErro('#func-erro');
+  abrir('#modal-func');
+}
+
+$('#form-func').addEventListener('submit', (e) => {
+  e.preventDefault();
+  enviar(e.currentTarget, '#func-erro', async () => {
+    const id = $('#func-id').value;
+    const corpo = { nome: $('#func-nome').value.trim(), email: $('#func-email').value.trim(), cargo: $('#func-cargo').value };
+    const senha = $('#func-senha').value;
+    if (senha) corpo.senha = senha;
+    // [UC007.FS001] / [UC008.FS001] Dados inválidos ou incompletos
+    if (!corpo.nome || !corpo.email) throw new Error('Nome e e-mail são obrigatórios.');
+    if (!id && senha.length < 6) throw new Error('A senha deve ter ao menos 6 caracteres.');
+    await api(id ? '/funcionarios/' + id : '/funcionarios', { metodo: id ? 'PUT' : 'POST', corpo });
+    fechar('#modal-func');
     toast(id ? 'Funcionário atualizado.' : 'Funcionário cadastrado.');
-    carregarFuncionarios();
-  } catch (err) {
-    mostrarErro('funcionario-error', err.message);
+    await funcionarios();
+  });
+});
+
+// ---------------------------------------------------------------------
+// CADASTRO DE ITENS — UC002, UC008, UC009 (gerente)
+// ---------------------------------------------------------------------
+async function cadastro() {
+  await carregarCategorias();
+}
+
+$('#form-cadastro').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  enviar(form, '#cad-erro', async () => {
+    const corpo = {
+      nome: $('#cad-nome').value.trim(),
+      categoria_id: $('#cad-categoria').value || null,
+      quantidade: Number($('#cad-qtd').value || 0),
+      quantidade_minima: Number($('#cad-min').value || 0),
+      unidade: $('#cad-un').value.trim() || 'un',
+    };
+    if (!corpo.nome) throw new Error('O nome do item é obrigatório.'); // [UC002.FS001]
+    await api('/itens', { metodo: 'POST', corpo });
+    form.reset();
+    $('#cad-qtd').value = 0; $('#cad-min').value = 0; $('#cad-un').value = 'un';
+    toast('Item cadastrado com sucesso.');
+    await cadastro();
+  });
+});
+
+function abrirItem(item) {
+  $('#item-id').value = item.id;
+  $('#item-nome').value = item.nome;
+  $('#item-categoria').value = item.categoria_id || '';
+  $('#item-min').value = item.quantidade_minima;
+  $('#item-un').value = item.unidade;
+  $('#item-desc').value = item.descricao || '';
+  limparErro('#item-erro');
+  abrir('#modal-item');
+}
+
+$('#form-item').addEventListener('submit', (e) => {
+  e.preventDefault();
+  enviar(e.currentTarget, '#item-erro', async () => {
+    const corpo = {
+      nome: $('#item-nome').value.trim(),
+      categoria_id: $('#item-categoria').value || null,
+      quantidade_minima: Number($('#item-min').value || 0),
+      unidade: $('#item-un').value.trim() || 'un',
+      descricao: $('#item-desc').value.trim() || null,
+    };
+    if (!corpo.nome) throw new Error('O nome do item não pode ficar vazio.'); // [UC008.FS001]
+    await api('/itens/' + $('#item-id').value, { metodo: 'PUT', corpo });
+    fechar('#modal-item');
+    toast('Item atualizado com sucesso.');
+    await tabelaEstoque();
+  });
+});
+
+// ---------------------------------------------------------------------
+// CATEGORIAS — RF03 (gerente)
+// ---------------------------------------------------------------------
+async function categorias() {
+  await carregarCategorias();
+  $('#cat-tabela').innerHTML = catsCache.length === 0
+    ? vazio('Nenhuma categoria cadastrada', 'Crie categorias para organizar os itens.')
+    : `<table class="tbl"><thead><tr><th>NOME</th><th>DESCRIÇÃO</th><th></th></tr></thead><tbody>${
+      catsCache.map((c) => `<tr><td><b>${esc(c.nome)}</b></td><td class="fraco">${esc(c.descricao || '—')}</td>
+        <td class="acoes"><button class="btn-link neutro" data-acao="editar-cat" data-id="${c.id}">Editar</button>
+          <button class="btn-link" data-acao="apagar-cat" data-id="${c.id}">Excluir</button></td></tr>`).join('')}</tbody></table>`;
+}
+
+function abrirCat(c) {
+  $('#cat-titulo').textContent = c ? 'Editar categoria' : 'Nova categoria';
+  $('#cat-id').value = c ? c.id : '';
+  $('#cat-nome').value = c ? c.nome : '';
+  $('#cat-desc').value = c?.descricao || '';
+  limparErro('#cat-erro');
+  abrir('#modal-cat');
+}
+
+$('#form-cat').addEventListener('submit', (e) => {
+  e.preventDefault();
+  enviar(e.currentTarget, '#cat-erro', async () => {
+    const id = $('#cat-id').value;
+    const corpo = { nome: $('#cat-nome').value.trim(), descricao: $('#cat-desc').value.trim() || null };
+    if (!corpo.nome) throw new Error('O nome da categoria é obrigatório.');
+    await api(id ? '/categorias/' + id : '/categorias', { metodo: id ? 'PUT' : 'POST', corpo });
+    fechar('#modal-cat');
+    toast(id ? 'Categoria atualizada.' : 'Categoria cadastrada.');
+    await categorias();
+  });
+});
+
+// ---------------------------------------------------------------------
+// Cliques da tela (um só "ouvinte" para todos os botões com data-acao)
+// ---------------------------------------------------------------------
+const ACOES = {
+  sair,
+  'novo-check': () => abrirCheck(null),
+  'editar-check': (d) => abrirCheck(checksCache.find((c) => c.id === Number(d.id))),
+  'apagar-check': (d) => confirmar('Excluir item', 'Deseja remover este item do seu checklist?', 'Excluir', async () => {
+    await api('/checklists/' + d.id, { metodo: 'DELETE' });
+    toast('Item removido do checklist.');
+    await checklists();
+  }),
+  mov: (d) => abrirMov(d.tipo, d.item),
+  'novo-item': () => { location.hash = 'cadastro'; },
+  'novo-func': () => abrirFunc(null),
+  'editar-func': (d) => abrirFunc(funcsCache.find((f) => f.id === Number(d.id))),
+  'desativar-func': (d) => confirmar('Desativar funcionário', 'Ele perde o acesso, mas o histórico de movimentações é preservado.', 'Desativar', async () => {
+    await api('/funcionarios/' + d.id, { metodo: 'DELETE' });
+    toast('Funcionário desativado.');
+    await funcionarios();
+  }),
+  'reativar-func': async (d) => {
+    await api('/funcionarios/' + d.id, { metodo: 'PUT', corpo: { ativo: true } });
+    toast('Funcionário reativado.');
+    await funcionarios();
+  },
+  'editar-item': (d) => abrirItem(itensEstoque.find((i) => i.id === Number(d.id))),
+  'apagar-item': (d) => confirmar('Excluir item', 'Deseja realmente excluir este item? O histórico de movimentações é preservado.', 'Excluir', async () => { // [UC009]
+    await api('/itens/' + d.id, { metodo: 'DELETE' });
+    toast('Item excluído com sucesso.');
+    await tabelaEstoque();
+  }),
+  'nova-cat': () => abrirCat(null),
+  'editar-cat': (d) => abrirCat(catsCache.find((c) => c.id === Number(d.id))),
+  'apagar-cat': (d) => confirmar('Excluir categoria', 'Os itens dessa categoria ficarão sem categoria.', 'Excluir', async () => {
+    await api('/categorias/' + d.id, { metodo: 'DELETE' });
+    toast('Categoria excluída.');
+    await categorias();
+  }),
+};
+
+document.addEventListener('click', async (e) => {
+  const nav = e.target.closest('[data-ir]');
+  if (nav) {
+    if (location.hash.slice(1) === nav.dataset.ir) irPara(nav.dataset.ir);
+    else location.hash = nav.dataset.ir;
+    return;
+  }
+  if (e.target.closest('[data-fechar]')) return e.target.closest('.fundo').classList.remove('show');
+  if (e.target.classList.contains('fundo')) return e.target.classList.remove('show'); // clique fora do modal
+
+  const botao = e.target.closest('[data-acao]');
+  if (botao && ACOES[botao.dataset.acao]) {
+    try { await ACOES[botao.dataset.acao](botao.dataset, botao); } catch (erro) { toast(erro.message, 'erro'); }
   }
 });
 
-window.confirmarExclusaoFuncionario = (id, nome) => {
-  document.getElementById('modal-confirmar-titulo').textContent = 'Desativar funcionário';
-  document.getElementById('modal-confirmar-texto').textContent =
-    `Deseja desativar o acesso de "${nome}"? O histórico de movimentações dele será preservado.`;
-  acaoConfirmacao = async () => {
-    await api(`/funcionarios/${id}`, { method: 'DELETE' });
-    toast('Funcionário desativado.');
-    carregarFuncionarios();
-  };
-  abrirModal('modal-confirmar');
-};
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') document.querySelectorAll('.fundo.show').forEach((m) => m.classList.remove('show'));
+});
+
+const CARREGAR = { inicio, estoque, checklists, movimentacoes, usuario, funcionarios, cadastro, categorias };
 
 // ---------------------------------------------------------------------
 // Início
 // ---------------------------------------------------------------------
-irPara('painel');
+async function iniciar() {
+  try {
+    USUARIO = await api('/auth/me');
+    EH_GERENTE = USUARIO.cargo === 'gerente';
+    localStorage.setItem('smartstock_usuario', JSON.stringify(USUARIO));
+
+    if (!EH_GERENTE) document.querySelectorAll('[data-admin]').forEach((el) => el.classList.add('hidden'));
+    $('#eu-nome').textContent = USUARIO.nome || '';
+    $('#eu-cargo').textContent = EH_GERENTE ? 'GERENTE' : 'FUNCIONÁRIO';
+    irPara(location.hash.slice(1) || 'inicio');
+  } catch (erro) {
+    if (localStorage.getItem('smartstock_token')) toast(erro.message, 'erro');
+  }
+}
+
+iniciar();
